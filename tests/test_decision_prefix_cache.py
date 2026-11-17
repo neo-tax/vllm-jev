@@ -274,3 +274,51 @@ def test_endpoint_still_rejects_salt_for_non_kev_decisions(tmp_path):
     )
     assert response.status_code == 422
     assert not engine.requests
+
+
+class TrackingEngine(CachingEngine):
+    """Records, for each encode, how many encodes had finished when it started."""
+
+    def __init__(self):
+        super().__init__()
+        self.finished = 0
+        self.started_after = []
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def encode(self, prompt, pooling_params, request_id):
+        self.started_after.append(self.finished)
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        await asyncio.sleep(0.01)
+        async for output in super().encode(prompt, pooling_params, request_id):
+            yield output
+        self.in_flight -= 1
+        self.finished += 1
+
+
+THREE_QUESTIONS = {
+    **PAYLOAD,
+    "questions": {
+        **PAYLOAD["questions"],
+        "dated": {"type": "noul", "instructions": "Is a deadline given?"},
+    },
+}
+
+
+def test_first_question_fills_the_cache_before_the_rest_run_together(tmp_path):
+    engine = TrackingEngine()
+    response = run(make_service(tmp_path, engine), THREE_QUESTIONS)
+    assert engine.started_after[0] == 0
+    assert all(after == 1 for after in engine.started_after[1:])
+    assert engine.max_in_flight == len(engine.requests) - 1 > 1
+    assert list(response["answers"]) == list(THREE_QUESTIONS["questions"])
+    reference = run(make_service(tmp_path, CachingEngine()), THREE_QUESTIONS)
+    assert probabilities(response["answers"]) == probabilities(reference["answers"])
+
+
+def test_uncached_questions_stay_sequential(tmp_path, monkeypatch):
+    monkeypatch.setenv("VLLM_JEV_KEV_PREFIX_CACHE", "0")
+    engine = TrackingEngine()
+    run(make_service(tmp_path, engine), THREE_QUESTIONS)
+    assert engine.max_in_flight == 1

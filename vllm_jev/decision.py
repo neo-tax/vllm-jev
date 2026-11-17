@@ -614,7 +614,6 @@ class DecisionService:
         prepared, state_tokens = await _compile_serialized(
             self.compile_lock, self.compiler.compile, payload
         )
-        answers = {}
         # A trusted caller's salt shares the state's cache blocks across
         # requests; otherwise a fresh salt shares them only among this
         # request's questions.
@@ -623,24 +622,36 @@ class DecisionService:
         compute_tokens = 0
         encoded = {}
         readouts = _readout_positions(prepared)
+
+        async def answer(question):
+            identifier, kind, keys, descriptions, isolated, rows = question
+            probabilities = await _gather_cancel_on_error(
+                self._score(row, kind, salt, encoded, readouts) for row in rows
+            )
+            if isolated:
+                mass = [p[1] for p in probabilities]
+                total = sum(mass)
+                p = [x / total for x in mass] if total else [1 / len(mass)] * len(mass)
+            else:
+                p = probabilities[0]
+            return identifier, _answer(kind, keys, descriptions, p)
+
         try:
-            for identifier, kind, keys, descriptions, isolated, rows in prepared:
-                probabilities = await _gather_cancel_on_error(
-                    self._score(row, kind, salt, encoded, readouts) for row in rows
+            # The first question fills the cache with the state; when it reads the
+            # cache, the rest then share it at once rather than one after another.
+            answered = [await answer(prepared[0])] if prepared else []
+            if self.read_prefix_cache:
+                answered += await _gather_cancel_on_error(
+                    answer(question) for question in prepared[1:]
                 )
-                input_tokens += sum(len(row[0]) - state_tokens for row in rows)
-                compute_tokens = sum(len(ids) for ids in encoded)
-                if isolated:
-                    mass = [p[1] for p in probabilities]
-                    total = sum(mass)
-                    p = (
-                        [x / total for x in mass]
-                        if total
-                        else [1 / len(mass)] * len(mass)
-                    )
-                else:
-                    p = probabilities[0]
-                answers[identifier] = _answer(kind, keys, descriptions, p)
+            else:
+                for question in prepared[1:]:
+                    answered.append(await answer(question))
+            answers = dict(answered)
+            input_tokens += sum(
+                len(row[0]) - state_tokens for *_, rows in prepared for row in rows
+            )
+            compute_tokens = sum(len(ids) for ids in encoded)
         finally:
             for task in encoded.values():
                 if not task.done():
