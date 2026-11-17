@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -83,7 +84,25 @@ def _publish(
     return output
 
 
-def prepare(model_id: str, workspace: Path, protocol: str = "auto") -> Path:
+def prepare(
+    model_id: str,
+    workspace: Path,
+    protocol: str = "auto",
+    *,
+    revision: str | None = None,
+    token: bool | str | None = False,
+) -> Path:
+    """Download and export `model_id` into `workspace`.
+
+    `revision` (a full commit hash) and `token` apply to checkpoints resolved
+    from the Hub by repository ID, such as private fine-tunes; built-in releases
+    keep their own pins and are fetched anonymously. `revision` overrides
+    KEV_PINNED_REVISIONS. `token` is huggingface_hub's: False is anonymous (the
+    default), True requires its token (HF_TOKEN, then the saved login), None
+    sends that token if one is found, and a string is the token itself.
+    """
+    if revision is not None and not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError(f"revision must be a full commit hash, not {revision!r}")
     if model_id in PROFILES:
         model_id = PROFILES[model_id][0]
     validate_repo_id(model_id)
@@ -121,10 +140,16 @@ def prepare(model_id: str, workspace: Path, protocol: str = "auto") -> Path:
                 from .mac_laya import prepare as prepare_laya_mps
 
                 return prepare_laya_mps(model_id, workspace)
-        return _prepare(model_id, workspace, protocol)
+        return _prepare(model_id, workspace, protocol, revision, token)
 
 
-def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
+def _prepare(
+    model_id: str,
+    workspace: Path,
+    protocol: str,
+    revision: str | None = None,
+    token: bool | str | None = False,
+) -> Path:
     from .drex_export import (
         MODEL_ID as DREX_MODEL_ID,
     )
@@ -394,6 +419,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
                 shutil.rmtree(temporary)
         return output
 
+    pinned = revision or KEV_PINNED_REVISIONS.get(model_id)
     workspace = workspace.resolve()
     output = workspace / "checkpoint" / model_id
     if output.exists():
@@ -407,7 +433,6 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
             raise ValueError("cached checkpoint belongs to another repository")
         if protocol not in ("auto", manifest.get("prompt_protocol")):
             raise ValueError("requested protocol differs from cached checkpoint")
-        pinned = KEV_PINNED_REVISIONS.get(model_id)
         if pinned and manifest.get("source_revision") != pinned:
             raise ValueError(
                 f"cached {model_id} checkpoint is revision "
@@ -419,9 +444,9 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
 
     info = HfApi().model_info(
         model_id,
-        revision=KEV_PINNED_REVISIONS.get(model_id),
+        revision=pinned,
         files_metadata=False,
-        token=False,
+        token=token,
     )
     files = {item.rfilename for item in info.siblings}
     from .decision_protocols import TASK_JSON_MODELS, THIS_THAT_MODELS
@@ -435,7 +460,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
             snapshot_download(
                 repo_id=model_id,
                 revision=info.sha,
-                token=False,
+                token=token,
                 local_dir=workspace / "public" / model_id,
                 allow_patterns=[
                     "model*.safetensors",
@@ -462,7 +487,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
             snapshot_download(
                 repo_id=model_id,
                 revision=info.sha,
-                token=False,
+                token=token,
                 local_dir=workspace / "public" / model_id,
                 allow_patterns=[
                     "model*.safetensors",
@@ -489,7 +514,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
             snapshot_download(
                 repo_id=model_id,
                 revision=info.sha,
-                token=False,
+                token=token,
                 local_dir=workspace / "public" / model_id,
                 allow_patterns=[
                     "model*.safetensors",
@@ -516,7 +541,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
             snapshot_download(
                 repo_id=model_id,
                 revision=info.sha,
-                token=False,
+                token=token,
                 local_dir=workspace / "public" / model_id,
                 allow_patterns=[
                     "model*.safetensors",
@@ -534,13 +559,13 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
             if not isinstance(base_id, str):
                 raise ValueError("decision adapter has no foundation model")
             base_info = HfApi().model_info(
-                base_id, revision=spec.get("revision"), token=False
+                base_id, revision=spec.get("revision"), token=token
             )
             base = Path(
                 snapshot_download(
                     repo_id=base_id,
                     revision=base_info.sha,
-                    token=False,
+                    token=token,
                     cache_dir=os.environ.get("HF_HUB_CACHE"),
                 )
             )
@@ -572,7 +597,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
                     repo_id=model_id,
                     filename="head.pt",
                     revision=info.sha,
-                    token=False,
+                    token=token,
                     local_dir=local,
                 )
             )
@@ -581,7 +606,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
             snapshot_download(
                 repo_id=model_id,
                 revision=info.sha,
-                token=False,
+                token=token,
                 local_dir=local,
                 allow_patterns=[
                     "model*.safetensors",
@@ -612,7 +637,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
             snapshot_download(
                 repo_id=model_id,
                 revision=info.sha,
-                token=False,
+                token=token,
                 local_dir=workspace / "public" / model_id,
                 allow_patterns=[
                     "model*.safetensors",
@@ -638,13 +663,13 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
                     "repository does not contain a Kev pointer-head release"
                 )
             base_info = HfApi().model_info(
-                meta["base"], revision=meta.get("base_revision"), token=False
+                meta["base"], revision=meta.get("base_revision"), token=token
             )
             base = Path(
                 snapshot_download(
                     repo_id=meta["base"],
                     revision=base_info.sha,
-                    token=False,
+                    token=token,
                     cache_dir=os.environ.get("HF_HUB_CACHE"),
                 )
             )
@@ -662,7 +687,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
                     repo_id=model_id,
                     filename="package/checkpoint/model.json",
                     revision=info.sha,
-                    token=False,
+                    token=token,
                 )
             ).read_text()
         )
@@ -679,7 +704,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
                     repo_id=base_id,
                     filename="config.json",
                     revision=base_revision,
-                    token=False,
+                    token=token,
                 )
             ).read_text()
         )
@@ -695,7 +720,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
                 snapshot_download(
                     repo_id=model_id,
                     revision=info.sha,
-                    token=False,
+                    token=token,
                     local_dir=workspace / "public" / model_id,
                     allow_patterns=sorted(SCALAR_FILES),
                 )
@@ -704,7 +729,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
             / "checkpoint"
         )
         base = Path(
-            snapshot_download(repo_id=base_id, revision=base_revision, token=False)
+            snapshot_download(repo_id=base_id, revision=base_revision, token=token)
         )
         from .export import export
 
@@ -726,7 +751,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
             snapshot_download(
                 repo_id=model_id,
                 revision=info.sha,
-                token=False,
+                token=token,
                 local_dir=workspace / "public" / model_id,
                 allow_patterns=[
                     "config.json",
@@ -761,7 +786,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
         snapshot_download(
             repo_id=model_id,
             revision=info.sha,
-            token=False,
+            token=token,
             local_dir=workspace / "public" / model_id,
             allow_patterns=sorted(BRANCH_FILES),
         )
@@ -788,7 +813,7 @@ def _prepare(model_id: str, workspace: Path, protocol: str) -> Path:
         snapshot_download(
             repo_id=config["model_name"],
             revision=config["model_revision"],
-            token=False,
+            token=token,
         )
     )
     from .export import export
@@ -825,12 +850,42 @@ def main() -> None:
         ),
         default="auto",
     )
+    add_hub_arguments(parser)
     args = parser.parse_args()
     print(
         "JEV_CHECKPOINT_READY",
-        prepare(args.model_id, args.workspace, args.protocol),
+        prepare(
+            args.model_id,
+            args.workspace,
+            args.protocol,
+            revision=args.revision,
+            token=args.hf_auth,
+        ),
         flush=True,
     )
+
+
+def add_hub_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--revision",
+        help="Commit hash of a Hub-resolved checkpoint (default: pinned or main).",
+    )
+    parser.add_argument(
+        "--hf-auth",
+        action="store_true",
+        help=(
+            "Authenticate Hub downloads with huggingface_hub's token (HF_TOKEN, "
+            "then the saved login), for private checkpoints; fails if there is none."
+        ),
+    )
+
+
+def hub_arguments(args: argparse.Namespace) -> list[str]:
+    """`args`' Hub options, as add_hub_arguments' flags."""
+    return [
+        *(["--revision", args.revision] if args.revision else []),
+        *(["--hf-auth"] if args.hf_auth else []),
+    ]
 
 
 if __name__ == "__main__":

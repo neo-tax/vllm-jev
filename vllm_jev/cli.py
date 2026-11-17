@@ -106,6 +106,10 @@ def main() -> None:
     from .radixflow.launch import arguments as radixflow_arguments
 
     radixflow_arguments(serve)
+    if sys.platform != "win32":
+        from .native_models import add_hub_arguments
+
+        add_hub_arguments(serve)
     arguments = sys.argv[1:]
     if sys.platform in ("darwin", "win32"):
         serve.add_argument("--host", default="127.0.0.1")
@@ -281,6 +285,10 @@ def main() -> None:
     model_id = PROFILES[args.model][0] if args.model in PROFILES else args.model
     checkpoint = Path(model_id)
     if checkpoint.is_dir():
+        if args.revision or args.hf_auth:
+            parser.error(
+                "--revision and --hf-auth apply to a Hub model ID, not a checkpoint"
+            )
         checkpoint = checkpoint.resolve()
         decision_manifest = checkpoint / "decision_manifest.json"
         if (
@@ -351,6 +359,8 @@ def main() -> None:
     else:
         from huggingface_hub.utils import validate_repo_id
 
+        from .native_models import hub_arguments
+
         validate_repo_id(model_id)
         if sys.platform == "darwin" and model_id.startswith("shgao/rsi-jev-"):
             parser.error("RSI-Jev serving requires Linux and native vLLM")
@@ -367,6 +377,7 @@ def main() -> None:
             str(workspace),
             "--protocol",
             args.protocol,
+            *hub_arguments(args),
         ]
     # Export can use CUDA; the child must exit before vLLM allocates GPU memory.
     if prepare is not None:

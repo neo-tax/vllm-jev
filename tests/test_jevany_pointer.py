@@ -494,7 +494,9 @@ def test_native_preparation_cli_accepts_jevany_protocol(tmp_path, monkeypatch, c
 
     calls = []
     monkeypatch.setattr(
-        native_models, "prepare", lambda *args: calls.append(args) or tmp_path
+        native_models,
+        "prepare",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or tmp_path,
     )
     monkeypatch.setattr(
         sys,
@@ -510,7 +512,10 @@ def test_native_preparation_cli_accepts_jevany_protocol(tmp_path, monkeypatch, c
     )
     native_models.main()
     assert calls == [
-        ("SimpleJev/JevAny-Qwen3.5-4B-LoRA", tmp_path, "jevany_pointer_v1")
+        (
+            ("SimpleJev/JevAny-Qwen3.5-4B-LoRA", tmp_path, "jevany_pointer_v1"),
+            {"revision": None, "token": False},
+        )
     ]
     assert "JEV_CHECKPOINT_READY" in capsys.readouterr().out
 
